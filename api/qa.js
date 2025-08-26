@@ -4,38 +4,56 @@ export default async function handler(req, res) {
 
   const { question = "", city = {}, poi = {} } = req.body || {};
 
-  // Tryb DEMO bez klucza: jeśli brak klucza, zwracamy prostą odpowiedź
-  const hasKey = !!process.env.OPENAI_API_KEY;
-  if (!hasKey) {
-    const demo = `DEMO: ${poi.title || "Miejsce"} — ${question ? "Twoje pytanie: " + question : "zapytaj o ciekawostkę"}.\nCiekawostka: wiele wątków historii widać w detalu architektonicznym.`;
-    return res.status(200).json({ answer: demo });
+  // 0) Sprawdź widoczność klucza
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) {
+    return res.status(200).json({
+      answer: `DEMO (brak OPENAI_API_KEY w Production). Pytanie: ${question || "-"}. Miejsce: ${poi.title || "-"}.`
+    });
   }
 
-  // Z kluczem: pytamy OpenAI (model tani i szybki)
+  // jeśli używasz klucza sk-proj- i masz ID projektu, możesz dodać OPENAI_PROJECT w Vercel
+  const project = process.env.OPENAI_PROJECT || "";
+
   const context = `
-Jesteś przewodnikiem. Odpowiadaj krótko po polsku, z 1 ciekawostką.
+Jesteś przewodnikiem. Odpowiadaj krótko po polsku i dodaj 1 ciekawostkę.
 Miasto: ${city.name || "-"}.
 Miejsce: ${poi.title || "-"}.
-Fakty: ${(poi.base_facts || []).join(" ")}.
+Fakty: ${(poi.base_facts || []).join(" ")}
 Pytanie: ${question}`.trim();
 
   try {
+    const headers = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${key}`,
+    };
+    if (project) headers["OpenAI-Project"] = project; // dla sk-proj-* bywa wymagane
+
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
+      headers,
       body: JSON.stringify({
-        model: "gpt-4o-mini", // tani/szybki
+        model: "gpt-4o-mini",
         messages: [{ role: "user", content: context }],
         temperature: 0.6,
       }),
-    }).then((x) => x.json());
+    });
 
-    const answer = r?.choices?.[0]?.message?.content?.trim() || "Brak odpowiedzi.";
+    const j = await r.json();
+
+    if (!r.ok) {
+      // TO zobaczysz w Vercel → Logs → Messages
+      console.error("OpenAI error", r.status, j);
+      return res.status(200).json({
+        answer: `AI error ${r.status}: ${j?.error?.message || "unknown"}`,
+      });
+    }
+
+    const answer =
+      j?.choices?.[0]?.message?.content?.trim() || "Brak odpowiedzi AI.";
     return res.status(200).json({ answer });
   } catch (e) {
-    return res.status(500).json({ error: "AI error" });
+    console.error("AI fetch failed:", e);
+    return res.status(200).json({ answer: "Problem z połączeniem z AI." });
   }
 }
